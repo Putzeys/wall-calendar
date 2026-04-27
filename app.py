@@ -2,10 +2,12 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+from io import BytesIO
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, redirect, render_template_string, request
+from flask import Flask, Response, redirect, render_template_string, request
+from PIL import Image, ImageDraw, ImageFont
 from google.auth.transport.requests import Request as GAuthRequest
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -226,7 +228,13 @@ WALL_HTML = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 {% if w == 0 %}<meta http-equiv="refresh" content="300; url=/wall" id="autoref">{% endif %}
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cozinha">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="apple-touch-icon" sizes="152x152" href="/apple-touch-icon-152x152.png">
+<link rel="apple-touch-icon" sizes="76x76" href="/apple-touch-icon-76x76.png">
 <title>Cozinha</title>
 <style>
 """ + BASE_CSS + """
@@ -341,6 +349,9 @@ CONFIRM_HTML = """<!doctype html>
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <title>Confirmar evento</title>
 <style>
 """ + BASE_CSS + """
@@ -629,6 +640,82 @@ def favicon_svg():
 </svg>"""
     return svg, 200, {"Content-Type": "image/svg+xml; charset=utf-8",
                       "Cache-Control": "public, max-age=3600"}
+
+
+_FONT_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/Library/Fonts/Arial Bold.ttf",
+]
+
+
+def _load_font(size: int) -> ImageFont.ImageFont:
+    for path in _FONT_PATHS:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
+
+
+def render_calendar_png(size: int = 180) -> bytes:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    pad = size // 14
+    body_top = int(size * 0.18)
+    bar_bot = body_top + int(size * 0.22)
+    radius = size // 12
+
+    d.rounded_rectangle(
+        (pad, body_top, size - pad, size - pad), radius=radius, fill="#fafafa"
+    )
+    d.rounded_rectangle(
+        (pad, body_top, size - pad, bar_bot), radius=radius, fill="#b53a3a"
+    )
+    d.rectangle((pad, bar_bot - radius, size - pad, bar_bot), fill="#b53a3a")
+
+    ring_w = max(4, size // 18)
+    ring_h = int(size * 0.18)
+    ring_y = int(size * 0.06)
+    for cx in (size * 0.28, size * 0.72):
+        d.rounded_rectangle(
+            (cx - ring_w / 2, ring_y, cx + ring_w / 2, ring_y + ring_h),
+            radius=ring_w // 2,
+            fill="#444",
+        )
+
+    day = str(datetime.now().day)
+    font = _load_font(int(size * 0.45))
+    bbox = d.textbbox((0, 0), day, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+    tx = (size - tw) / 2 - bbox[0]
+    ty = bar_bot + (size - pad - bar_bot - th) / 2 - bbox[1]
+    d.text((tx, ty), day, fill="#222", font=font)
+
+    buf = BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+@app.route("/apple-touch-icon.png")
+@app.route("/apple-touch-icon-precomposed.png")
+@app.route("/apple-touch-icon-180x180.png")
+def apple_icon_180():
+    return Response(render_calendar_png(180), mimetype="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.route("/apple-touch-icon-152x152.png")
+@app.route("/apple-touch-icon-152x152-precomposed.png")
+def apple_icon_152():
+    return Response(render_calendar_png(152), mimetype="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.route("/apple-touch-icon-76x76.png")
+@app.route("/apple-touch-icon-76x76-precomposed.png")
+def apple_icon_76():
+    return Response(render_calendar_png(152), mimetype="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
 
 
 if __name__ == "__main__":
