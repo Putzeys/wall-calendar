@@ -225,10 +225,20 @@ WALL_HTML = """<!doctype html>
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<meta http-equiv="refresh" content="300" id="autoref">
+{% if w == 0 %}<meta http-equiv="refresh" content="300; url=/wall" id="autoref">{% endif %}
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <title>Cozinha</title>
 <style>
 """ + BASE_CSS + """
+.navbar{display:-webkit-flex;display:flex;-webkit-align-items:center;
+  align-items:center;-webkit-justify-content:space-between;
+  justify-content:space-between;padding:8px 14px;background:#0a0a0a;
+  border-bottom:1px solid #222;font-size:15px}
+.navbar .nav{display:inline-block;padding:6px 18px;border-radius:6px;
+  background:#222;color:#9cf;font-size:22px;font-weight:bold;line-height:1}
+.navbar .range{color:#aaa}
+.navbar .today{margin-left:10px;padding:4px 10px;border-radius:6px;
+  background:#2a6;color:#fff;font-size:13px}
 .filters{display:-webkit-flex;display:flex;padding:8px;background:#0a0a0a;
   border-bottom:1px solid #222;-webkit-flex-wrap:wrap;flex-wrap:wrap}
 .filters a{display:inline-block;padding:6px 12px;margin:3px;border-radius:14px;
@@ -256,6 +266,11 @@ button.add{font-size:22px;padding:14px 24px;margin-left:8px;background:#2a6;
   color:#fff;border:0;border-radius:4px;font-weight:bold}
 </style></head><body>
 {% if msg %}<div class="flash {{ 'err' if err else '' }}" id="flash">{{ msg }}</div>{% endif %}
+<div class="navbar">
+  <a href="/wall?w={{ w - 1 }}" class="nav">‹</a>
+  <span class="range">{{ range_label }}{% if w != 0 %} <a href="/wall" class="today">↺ hoje</a>{% endif %}</span>
+  <a href="/wall?w={{ w + 1 }}" class="nav">›</a>
+</div>
 <div class="filters">
 {% for c in cal_meta %}
   <a href="/toggle?cal={{ c.id|urlencode }}"
@@ -378,10 +393,19 @@ def wall():
         return f"<h1>Setup pendente</h1><p>{ex}</p>", 503
 
     hidden = hidden_cals(request)
+    try:
+        w = int(request.args.get("w", "0"))
+    except ValueError:
+        w = 0
+    w = max(-52, min(52, w))
     now = datetime.now()
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = today_start + timedelta(days=7 * w)
     end = start + timedelta(days=7)
     items = fetch_events(start, end)
+    range_label = (
+        f"{start.strftime('%d/%m')} — {(end - timedelta(days=1)).strftime('%d/%m')}"
+    )
 
     cal_meta = []
     bday_keys = set()
@@ -444,6 +468,8 @@ def wall():
         WALL_HTML,
         days=days,
         cal_meta=cal_meta,
+        w=w,
+        range_label=range_label,
         msg=request.args.get("msg"),
         err=request.args.get("err"),
     )
@@ -584,6 +610,25 @@ def whoami():
 @app.route("/favicon.ico")
 def favicon():
     return "", 204
+
+
+@app.route("/favicon.svg")
+def favicon_svg():
+    """Calendar tile with today's day number."""
+    day = datetime.now().day
+    svg = f"""<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="6" y="14" width="52" height="44" rx="6" fill="#fafafa"/>
+  <rect x="6" y="14" width="52" height="14" rx="6" fill="#b53a3a"/>
+  <rect x="6" y="22" width="52" height="6" fill="#b53a3a"/>
+  <rect x="14" y="6" width="6" height="14" rx="2" fill="#444"/>
+  <rect x="44" y="6" width="6" height="14" rx="2" fill="#444"/>
+  <text x="32" y="52" font-family="-apple-system,Helvetica,sans-serif"
+        font-size="28" font-weight="700" text-anchor="middle"
+        fill="#222">{day}</text>
+</svg>"""
+    return svg, 200, {"Content-Type": "image/svg+xml; charset=utf-8",
+                      "Cache-Control": "public, max-age=3600"}
 
 
 if __name__ == "__main__":
