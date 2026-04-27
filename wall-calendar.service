@@ -1,0 +1,17 @@
+[Unit]
+Description=Wall Calendar (cozinha)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/home/youruser/wall-calendar
+ExecStart=/home/youruser/wall-calendar/run.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
