@@ -121,7 +121,15 @@ Regras:
 - "café da manhã" / "café" = 08:00; "almoço" = 12:00; "jantar" = 20:00.
 - "amanhã" = hoje+1; "depois de amanhã" = hoje+2.
 - "sexta que vem" / "próxima sexta" = próxima ocorrência do dia da semana.
-- Title curto, sem ponto final.
+- Title: preserve a frase original, removendo APENAS palavras de tempo
+  ("hoje", "amanhã", horários como "20h", "às 12h30", dias da semana,
+  "que vem"). Mantenha pessoas, locais, contexto. Sem ponto final.
+
+Exemplos:
+"jantar com Esther hoje" → title "jantar com Esther"
+"reunião com Pedro amanhã 14h sobre TCC" → title "reunião com Pedro sobre TCC"
+"academia sexta 7h" → title "academia"
+"buscar Sofia na escola às 17h" → title "buscar Sofia na escola"
 """
 
 
