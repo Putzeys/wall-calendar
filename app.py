@@ -161,6 +161,12 @@ a{color:#9cf;text-decoration:none}
 .flash{position:fixed;top:0;left:0;right:0;padding:10px;text-align:center;
   background:#2a6;color:#fff;font-size:16px;z-index:10}
 .flash.err{background:#b33}
+.spin{display:inline-block;width:18px;height:18px;border:3px solid #fff;
+  border-top-color:transparent;border-radius:50%;vertical-align:middle;
+  -webkit-animation:sp .8s linear infinite;animation:sp .8s linear infinite}
+@-webkit-keyframes sp{to{-webkit-transform:rotate(360deg)}}
+@keyframes sp{to{transform:rotate(360deg)}}
+button[disabled]{opacity:.6}
 """
 
 WALL_HTML = """<!doctype html>
@@ -186,6 +192,10 @@ WALL_HTML = """<!doctype html>
 .ev.past{opacity:0.45}
 .ev.allday{font-size:12px;padding:4px 8px;border-left:3px solid #fff;border-radius:2px}
 .ev.allday time{display:none}
+.ev.bday{background:transparent !important;color:#f9c66b;font-size:13px;
+  padding:2px 4px;border:0;margin-bottom:2px}
+.ev.bday time{display:none}
+.ev.bday:before{content:"🎂 "}
 form.bar{position:fixed;bottom:0;left:0;right:0;padding:10px;background:#000;
   display:-webkit-flex;display:flex;border-top:1px solid #333}
 input.txt{-webkit-flex:1;flex:1;font-size:22px;padding:14px;background:#222;
@@ -206,7 +216,7 @@ button.add{font-size:22px;padding:14px 24px;margin-left:8px;background:#2a6;
   <div class="day{% if d.today %} today{% endif %}">
     <h2>{{ d.label }}</h2>
     {% for e in d.events %}
-      <div class="ev{% if e.past %} past{% endif %}{% if e.allday %} allday{% endif %}"
+      <div class="ev{% if e.past %} past{% endif %}{% if e.allday and not e.bday %} allday{% endif %}{% if e.bday %} bday{% endif %}"
            style="background:{{ e.color }}">
         <time>{{ e.time }}</time>{{ e.title }}
       </div>
@@ -214,20 +224,38 @@ button.add{font-size:22px;padding:14px 24px;margin-left:8px;background:#2a6;
   </div>
 {% endfor %}
 </div>
-<form class="bar" action="/events" method="post" autocomplete="off">
+<form class="bar" action="/events" method="post" autocomplete="off" id="addform">
   <input class="txt" type="text" name="text" id="t"
-         placeholder="Almoço com Cheila amanhã 12h"
+         placeholder="almoço com a esther amanhã 12h"
          autocapitalize="sentences" autocorrect="on">
   <button class="add" type="submit">+</button>
 </form>
 <script>
 (function(){
   var t=document.getElementById('t'), m=document.getElementById('autoref');
-  if(!t||!m) return;
-  t.addEventListener('focus',function(){
-    if(m.parentNode) m.parentNode.removeChild(m);
-    setTimeout(function(){ t.scrollIntoView(); },300);
-  });
+  if(t&&m){
+    t.addEventListener('focus',function(){
+      if(m.parentNode) m.parentNode.removeChild(m);
+      setTimeout(function(){ t.scrollIntoView(); },300);
+    });
+  }
+  var forms=document.getElementsByTagName('form');
+  for(var i=0;i<forms.length;i++){
+    forms[i].addEventListener('submit',function(ev){
+      var f=ev.currentTarget||this;
+      setTimeout(function(){
+        var btns=f.getElementsByTagName('button');
+        for(var j=0;j<btns.length;j++){
+          if(btns[j].type==='submit'){
+            btns[j].disabled=true;
+            btns[j].innerHTML='<span class="spin"></span>';
+          }
+        }
+        var inp=f.querySelector('input[type=text]');
+        if(inp) inp.disabled=true;
+      },0);
+    });
+  }
 })();
 </script>
 </body></html>"""
@@ -259,7 +287,7 @@ button{-webkit-flex:1;flex:1;font-size:22px;padding:18px;border:0;border-radius:
     <form action="/wall" method="get" style="-webkit-flex:1;flex:1">
       <button type="submit" class="cancel">Cancelar</button>
     </form>
-    <form action="/events/confirm" method="post" style="-webkit-flex:1;flex:1">
+    <form action="/events/confirm" method="post" style="-webkit-flex:1;flex:1" id="cf">
       <input type="hidden" name="title" value="{{ p.title }}">
       <input type="hidden" name="start" value="{{ p.start }}">
       <input type="hidden" name="duration_min" value="{{ p.duration_min }}">
@@ -267,6 +295,12 @@ button{-webkit-flex:1;flex:1;font-size:22px;padding:18px;border:0;border-radius:
     </form>
   </div>
 </div>
+<script>
+document.getElementById('cf').addEventListener('submit',function(){
+  var b=this.querySelector('button');
+  setTimeout(function(){ b.disabled=true; b.innerHTML='<span class="spin"></span>'; },0);
+});
+</script>
 </body></html>"""
 
 # ---------- routes ----------
@@ -286,21 +320,25 @@ def wall():
     end = start + timedelta(days=7)
     items = fetch_events(cal, start, end)
 
-    cal_meta = [
-        {
+    cal_meta = []
+    bday_cal_ids = set()
+    for i, cid in enumerate(CALENDAR_IDS):
+        name = cal_name(cal, cid)
+        is_bday = "aniversári" in name.lower() or "birthday" in name.lower()
+        if is_bday:
+            bday_cal_ids.add(cid)
+        cal_meta.append({
             "id": cid,
-            "name": cal_name(cal, cid),
+            "name": name,
             "color": CAL_COLORS[i % len(CAL_COLORS)],
             "hidden": cid in hidden,
-        }
-        for i, cid in enumerate(CALENDAR_IDS)
-    ]
+        })
 
     days = []
     for i in range(7):
         d = start + timedelta(days=i)
         key = d.strftime("%Y-%m-%d")
-        all_day, timed = [], []
+        bdays, all_day, timed = [], [], []
         for e in items:
             if e["_cal"] in hidden:
                 continue
@@ -308,6 +346,7 @@ def wall():
             if dt_full[:10] != key:
                 continue
             is_allday = not e["start"].get("dateTime")
+            is_bday = e["_cal"] in bday_cal_ids
             time_str = "" if is_allday else e["start"]["dateTime"][11:16]
             past = bool(e["start"].get("dateTime")) and (
                 datetime.fromisoformat(
@@ -320,12 +359,18 @@ def wall():
                 "color": e["_color"],
                 "past": past,
                 "allday": is_allday,
+                "bday": is_bday,
             }
-            (all_day if is_allday else timed).append(ev)
+            if is_bday:
+                bdays.append(ev)
+            elif is_allday:
+                all_day.append(ev)
+            else:
+                timed.append(ev)
         days.append({
             "label": day_label(d, now),
             "today": d.date() == now.date(),
-            "events": all_day + timed,
+            "events": bdays + all_day + timed,
         })
 
     return render_template_string(
@@ -415,14 +460,33 @@ def list_calendars():
     """Helper: lista IDs disponíveis pra colocar em CALENDAR_IDS."""
     cals = calendar_service().calendarList().list().execute().get("items", [])
     rows = "".join(
-        f"<tr><td><code>{c['id']}</code></td><td>{c.get('summary','')}</td></tr>"
+        f"<tr><td><code>{c['id']}</code></td>"
+        f"<td>{c.get('summary','')}</td>"
+        f"<td>{c.get('accessRole','')}</td></tr>"
         for c in cals
     )
     return (
         "<h1>Suas agendas</h1>"
-        "<p>Copie os IDs desejados para <code>CALENDAR_IDS</code> no .env</p>"
-        f"<table border=1 cellpadding=6>{rows}</table>"
+        "<p>Copie os IDs para <code>CALENDAR_IDS</code> no .env. "
+        "Para escrever, <code>WRITE_CALENDAR</code> precisa de "
+        "accessRole=owner ou writer.</p>"
+        f"<table border=1 cellpadding=6>"
+        f"<tr><th>id</th><th>nome</th><th>access</th></tr>{rows}</table>"
     )
+
+
+@app.route("/whoami")
+def whoami():
+    """Conta com a qual o token foi gerado, e qual é a primary."""
+    cal = calendar_service()
+    cals = cal.calendarList().list().execute().get("items", [])
+    primary = next((c for c in cals if c.get("primary")), None)
+    return {
+        "primary_id": primary["id"] if primary else None,
+        "primary_summary": primary.get("summary") if primary else None,
+        "write_calendar_env": WRITE_CALENDAR,
+        "calendar_ids_env": CALENDAR_IDS,
+    }
 
 
 @app.route("/favicon.ico")
