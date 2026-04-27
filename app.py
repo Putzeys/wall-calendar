@@ -314,6 +314,17 @@ button.add{font-size:22px;padding:14px 24px;margin-left:8px;background:#2a6;
       setTimeout(function(){ t.scrollIntoView(); },300);
     });
   }
+  if(window.navigator.standalone){
+    document.addEventListener('click',function(ev){
+      var a=ev.target;
+      while(a&&a.tagName!=='A') a=a.parentNode;
+      if(!a||!a.href) return;
+      if(a.target==='_blank') return;
+      if(a.host&&a.host!==window.location.host) return;
+      ev.preventDefault();
+      window.location.href=a.href;
+    });
+  }
   var fl=document.getElementById('flash');
   if(fl){
     var isErr=fl.className.indexOf('err')>=0;
