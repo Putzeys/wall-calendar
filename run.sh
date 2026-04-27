@@ -15,17 +15,15 @@ if [ ! -f .env ]; then
   echo "criado .env — edite se necessário"
 fi
 
-# shellcheck disable=SC1091
-set -a; . ./.env; set +a
-
 if [ ! -f token.json ]; then
   echo "ERRO: token.json ausente. Rode: python auth.py"
   exit 1
 fi
 
-# pré-aquece o modelo no Ollama (carrega na VRAM em background)
-MODEL="${OLLAMA_MODEL:-qwen2.5:3b}"
-URL="${OLLAMA_URL:-http://localhost:11434/api/chat}"
+# Lê só OLLAMA_MODEL e OLLAMA_URL do .env via python-dotenv pra não cair em
+# armadilhas de shell quoting (valores com | ::, etc).
+MODEL=$(python -c "from dotenv import dotenv_values; print(dotenv_values('.env').get('OLLAMA_MODEL') or 'qwen2.5:3b')")
+URL=$(python -c "from dotenv import dotenv_values; print(dotenv_values('.env').get('OLLAMA_URL') or 'http://localhost:11434/api/chat')")
 echo "aquecendo $MODEL..."
 curl -s -X POST "$URL" -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"oi\"}],\"stream\":false,\"keep_alive\":\"30m\"}" > /dev/null || \
   echo "aviso: Ollama não respondeu (siga assim mesmo)"
