@@ -118,6 +118,7 @@ Regras:
 - Sem hora explícita use 09:00.
 - Sem duração explícita use 60 minutos.
 - "manhã" = 09:00, "tarde" = 14:00, "noite" = 20:00.
+- "café da manhã" / "café" = 08:00; "almoço" = 12:00; "jantar" = 20:00.
 - "amanhã" = hoje+1; "depois de amanhã" = hoje+2.
 - "sexta que vem" / "próxima sexta" = próxima ocorrência do dia da semana.
 - Title curto, sem ponto final.
@@ -454,12 +455,13 @@ def parse_step():
 
     s = datetime.fromisoformat(p["start"])
     pretty = s.strftime("%a %d/%m às %H:%M")
+    write_label = WRITE_CAL_ID if WRITE_ACCOUNT == "main" else f"{WRITE_ACCOUNT}::{WRITE_CAL_ID}"
     return render_template_string(
         CONFIRM_HTML,
         p=p,
         pretty=pretty,
         original=text,
-        write_cal=WRITE_CALENDAR,
+        write_cal=write_label,
     )
 
 
