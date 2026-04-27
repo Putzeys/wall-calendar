@@ -209,8 +209,10 @@ BASE_CSS = """
 body{font:18px -apple-system,Helvetica;margin:0;background:#111;color:#eee}
 a{color:#9cf;text-decoration:none}
 .flash{position:fixed;top:0;left:0;right:0;padding:10px;text-align:center;
-  background:#2a6;color:#fff;font-size:16px;z-index:10}
+  background:#2a6;color:#fff;font-size:16px;z-index:10;
+  -webkit-transition:opacity .4s;transition:opacity .4s}
 .flash.err{background:#b33}
+.flash.fade{opacity:0}
 .spin{display:inline-block;width:18px;height:18px;border:3px solid #fff;
   border-top-color:transparent;border-radius:50%;vertical-align:middle;
   -webkit-animation:sp .8s linear infinite;animation:sp .8s linear infinite}
@@ -253,7 +255,7 @@ input.txt{-webkit-flex:1;flex:1;font-size:22px;padding:14px;background:#222;
 button.add{font-size:22px;padding:14px 24px;margin-left:8px;background:#2a6;
   color:#fff;border:0;border-radius:4px;font-weight:bold}
 </style></head><body>
-{% if msg %}<div class="flash {{ 'err' if err else '' }}">{{ msg }}</div>{% endif %}
+{% if msg %}<div class="flash {{ 'err' if err else '' }}" id="flash">{{ msg }}</div>{% endif %}
 <div class="filters">
 {% for c in cal_meta %}
   <a href="/toggle?cal={{ c.id|urlencode }}"
@@ -288,6 +290,16 @@ button.add{font-size:22px;padding:14px 24px;margin-left:8px;background:#2a6;
       if(m.parentNode) m.parentNode.removeChild(m);
       setTimeout(function(){ t.scrollIntoView(); },300);
     });
+  }
+  var fl=document.getElementById('flash');
+  if(fl){
+    var isErr=fl.className.indexOf('err')>=0;
+    var hideAfter=isErr?6000:3000;
+    setTimeout(function(){ fl.className+=' fade'; },hideAfter);
+    setTimeout(function(){ if(fl.parentNode) fl.parentNode.removeChild(fl); },hideAfter+500);
+    if(window.history&&window.history.replaceState){
+      window.history.replaceState({},'',window.location.pathname);
+    }
   }
   var forms=document.getElementsByTagName('form');
   for(var i=0;i<forms.length;i++){
