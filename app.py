@@ -22,51 +22,89 @@ SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TIMEZONE = os.getenv("TIMEZONE", "America/Sao_Paulo")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
-CALENDAR_IDS = [
-    c.strip()
-    for c in os.getenv("CALENDAR_IDS", "primary").split(",")
-    if c.strip()
-]
-WRITE_CALENDAR = os.getenv("WRITE_CALENDAR", "primary")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "5000"))
 
 CAL_COLORS = ["#1e3a5f", "#5f1e3a", "#3a5f1e", "#5f3a1e", "#3a1e5f", "#1e5f5f"]
 DIAS = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
 
+
+def parse_cal_entry(entry: str) -> tuple[str, str, str | None]:
+    """Parse 'account::id|name', 'id|name', 'account::id', or 'id'.
+
+    Account defaults to 'main' when omitted. Name override is None when
+    not provided (falls back to Google calendarList summary).
+    """
+    s = entry.strip()
+    if "::" in s:
+        acc, rest = s.split("::", 1)
+    else:
+        acc, rest = "main", s
+    if "|" in rest:
+        cid, name = rest.split("|", 1)
+    else:
+        cid, name = rest, None
+    return acc.strip(), cid.strip(), (name.strip() if name else None)
+
+
+CALENDAR_ENTRIES = [
+    parse_cal_entry(e)
+    for e in os.getenv("CALENDAR_IDS", "primary").split(",")
+    if e.strip()
+]
+WRITE_ACCOUNT, WRITE_CAL_ID, _ = parse_cal_entry(
+    os.getenv("WRITE_CALENDAR", "primary")
+)
+
+
+def token_path(account: str) -> str:
+    return "token.json" if account == "main" else f"token_{account}.json"
+
+
+_services: dict[str, object] = {}
+
+
+def calendar_service(account: str = "main"):
+    if account in _services:
+        return _services[account]
+    path = token_path(account)
+    if not os.path.exists(path):
+        hint = "" if account == "main" else f" {account}"
+        raise RuntimeError(
+            f"{path} ausente — rode `python auth.py{hint}` primeiro."
+        )
+    creds = Credentials.from_authorized_user_file(path, SCOPES)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(GAuthRequest())
+        with open(path, "w") as f:
+            f.write(creds.to_json())
+    svc = build("calendar", "v3", credentials=creds, cache_discovery=False)
+    _services[account] = svc
+    return svc
+
+
 app = Flask(__name__)
 
 _cal_names_cache: dict[str, str] = {}
 
 
-def cal_name(cal, cal_id: str) -> str:
-    if cal_id in _cal_names_cache:
-        return _cal_names_cache[cal_id]
+def cal_name(account: str, cal_id: str) -> str:
+    key = f"{account}::{cal_id}"
+    if key in _cal_names_cache:
+        return _cal_names_cache[key]
     try:
-        info = cal.calendarList().get(calendarId=cal_id).execute()
+        info = calendar_service(account).calendarList().get(calendarId=cal_id).execute()
         name = info.get("summaryOverride") or info.get("summary") or cal_id
     except Exception:
         name = cal_id.split("@")[0]
-    _cal_names_cache[cal_id] = name
+    _cal_names_cache[key] = name
     return name
 
 
 def hidden_cals(req) -> set[str]:
+    """Cookie stores account::id keys."""
     raw = req.cookies.get("hidden", "")
     return {c for c in raw.split(",") if c}
-
-
-def calendar_service():
-    if not os.path.exists("token.json"):
-        raise RuntimeError(
-            "token.json ausente — rode `python auth.py` primeiro."
-        )
-    creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(GAuthRequest())
-        with open("token.json", "w") as f:
-            f.write(creds.to_json())
-    return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
 SYS_PROMPT = """Você converte frases em PT-BR para JSON de evento de calendário.
@@ -116,10 +154,11 @@ def parse_event(text: str) -> dict:
     return p
 
 
-def fetch_events(cal, start, end):
+def fetch_events(start, end):
     out = []
-    for i, cal_id in enumerate(CALENDAR_IDS):
+    for i, (acc, cal_id, _name) in enumerate(CALENDAR_ENTRIES):
         try:
+            cal = calendar_service(acc)
             items = (
                 cal.events()
                 .list(
@@ -132,13 +171,15 @@ def fetch_events(cal, start, end):
                 .execute()
                 .get("items", [])
             )
-        except HttpError as ex:
-            log.warning("falha lendo %s: %s", cal_id, ex)
+        except (HttpError, RuntimeError) as ex:
+            log.warning("falha lendo %s::%s: %s", acc, cal_id, ex)
             continue
         color = CAL_COLORS[i % len(CAL_COLORS)]
         for e in items:
             e["_color"] = color
             e["_cal"] = cal_id
+            e["_account"] = acc
+            e["_key"] = f"{acc}::{cal_id}"
             out.append(e)
     return out
 
@@ -310,7 +351,8 @@ document.getElementById('cf').addEventListener('submit',function(){
 @app.route("/wall")
 def wall():
     try:
-        cal = calendar_service()
+        for acc in {e[0] for e in CALENDAR_ENTRIES}:
+            calendar_service(acc)
     except RuntimeError as ex:
         return f"<h1>Setup pendente</h1><p>{ex}</p>", 503
 
@@ -318,20 +360,21 @@ def wall():
     now = datetime.now()
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=7)
-    items = fetch_events(cal, start, end)
+    items = fetch_events(start, end)
 
     cal_meta = []
-    bday_cal_ids = set()
-    for i, cid in enumerate(CALENDAR_IDS):
-        name = cal_name(cal, cid)
+    bday_keys = set()
+    for i, (acc, cid, name_override) in enumerate(CALENDAR_ENTRIES):
+        name = name_override or cal_name(acc, cid)
+        key = f"{acc}::{cid}"
         is_bday = "aniversári" in name.lower() or "birthday" in name.lower()
         if is_bday:
-            bday_cal_ids.add(cid)
+            bday_keys.add(key)
         cal_meta.append({
-            "id": cid,
+            "id": key,
             "name": name,
             "color": CAL_COLORS[i % len(CAL_COLORS)],
-            "hidden": cid in hidden,
+            "hidden": key in hidden,
         })
 
     days = []
@@ -340,13 +383,13 @@ def wall():
         key = d.strftime("%Y-%m-%d")
         bdays, all_day, timed = [], [], []
         for e in items:
-            if e["_cal"] in hidden:
+            if e["_key"] in hidden:
                 continue
             dt_full = e["start"].get("dateTime", "") or e["start"].get("date", "")
             if dt_full[:10] != key:
                 continue
             is_allday = not e["start"].get("dateTime")
-            is_bday = e["_cal"] in bday_cal_ids
+            is_bday = e["_key"] in bday_keys
             time_str = "" if is_allday else e["start"]["dateTime"][11:16]
             past = bool(e["start"].get("dateTime")) and (
                 datetime.fromisoformat(
@@ -384,12 +427,13 @@ def wall():
 
 @app.route("/toggle")
 def toggle_cal():
-    cal_id = request.args.get("cal", "")
+    key = request.args.get("cal", "")
+    valid_keys = {f"{a}::{c}" for a, c, _ in CALENDAR_ENTRIES}
     hidden = hidden_cals(request)
-    if cal_id in hidden:
-        hidden.discard(cal_id)
-    elif cal_id in CALENDAR_IDS:
-        hidden.add(cal_id)
+    if key in hidden:
+        hidden.discard(key)
+    elif key in valid_keys:
+        hidden.add(key)
     resp = redirect("/wall")
     resp.set_cookie("hidden", ",".join(sorted(hidden)),
                     max_age=60 * 60 * 24 * 365, samesite="Lax")
@@ -426,15 +470,15 @@ def confirm_step():
         start = datetime.fromisoformat(request.form["start"])
         dur = int(request.form["duration_min"])
         end = start + timedelta(minutes=dur)
-        calendar_service().events().insert(
-            calendarId=WRITE_CALENDAR,
+        calendar_service(WRITE_ACCOUNT).events().insert(
+            calendarId=WRITE_CAL_ID,
             body={
                 "summary": title,
                 "start": {"dateTime": start.isoformat(), "timeZone": TIMEZONE},
                 "end": {"dateTime": end.isoformat(), "timeZone": TIMEZONE},
             },
         ).execute()
-        log.info("inseriu: %s @ %s", title, start)
+        log.info("inseriu: %s @ %s (acc=%s)", title, start, WRITE_ACCOUNT)
         return redirect(f"/wall?msg=Criado: {title}")
     except Exception as ex:
         log.exception("falha inserindo")
@@ -443,11 +487,14 @@ def confirm_step():
 
 @app.route("/health")
 def health():
-    out = {"calendar": "ok", "ollama": "ok", "calendars": CALENDAR_IDS}
-    try:
-        calendar_service().calendarList().list(maxResults=1).execute()
-    except Exception as ex:
-        out["calendar"] = f"erro: {ex}"
+    out = {"ollama": "ok", "accounts": {}}
+    accs = {e[0] for e in CALENDAR_ENTRIES} | {WRITE_ACCOUNT}
+    for acc in accs:
+        try:
+            calendar_service(acc).calendarList().list(maxResults=1).execute()
+            out["accounts"][acc] = "ok"
+        except Exception as ex:
+            out["accounts"][acc] = f"erro: {ex}"
     try:
         requests.get(OLLAMA_URL.replace("/api/chat", "/api/tags"), timeout=3)
     except Exception as ex:
@@ -457,36 +504,56 @@ def health():
 
 @app.route("/calendars")
 def list_calendars():
-    """Helper: lista IDs disponíveis pra colocar em CALENDAR_IDS."""
-    cals = calendar_service().calendarList().list().execute().get("items", [])
-    rows = "".join(
-        f"<tr><td><code>{c['id']}</code></td>"
-        f"<td>{c.get('summary','')}</td>"
-        f"<td>{c.get('accessRole','')}</td></tr>"
-        for c in cals
-    )
+    """Lista IDs de todas as contas autenticadas."""
+    rows = []
+    accs = sorted({e[0] for e in CALENDAR_ENTRIES} | {WRITE_ACCOUNT, "main"})
+    for acc in accs:
+        try:
+            cals = calendar_service(acc).calendarList().list().execute().get("items", [])
+        except Exception as ex:
+            rows.append(f"<tr><td colspan=4>conta <b>{acc}</b>: {ex}</td></tr>")
+            continue
+        for c in cals:
+            rows.append(
+                f"<tr><td><b>{acc}</b></td>"
+                f"<td><code>{c['id']}</code></td>"
+                f"<td>{c.get('summary','')}</td>"
+                f"<td>{c.get('accessRole','')}</td></tr>"
+            )
     return (
-        "<h1>Suas agendas</h1>"
-        "<p>Copie os IDs para <code>CALENDAR_IDS</code> no .env. "
-        "Para escrever, <code>WRITE_CALENDAR</code> precisa de "
-        "accessRole=owner ou writer.</p>"
+        "<h1>Agendas disponíveis</h1>"
+        "<p>Sintaxe pro <code>CALENDAR_IDS</code>: "
+        "<code>id|nome</code> ou <code>conta::id|nome</code>. "
+        "Sem prefixo de conta usa <code>main</code> (token.json). "
+        "Pra adicionar outra conta: <code>python auth.py LABEL</code>.</p>"
         f"<table border=1 cellpadding=6>"
-        f"<tr><th>id</th><th>nome</th><th>access</th></tr>{rows}</table>"
+        f"<tr><th>conta</th><th>id</th><th>nome</th><th>access</th></tr>"
+        f"{''.join(rows)}</table>"
     )
 
 
 @app.route("/whoami")
 def whoami():
-    """Conta com a qual o token foi gerado, e qual é a primary."""
-    cal = calendar_service()
-    cals = cal.calendarList().list().execute().get("items", [])
-    primary = next((c for c in cals if c.get("primary")), None)
-    return {
-        "primary_id": primary["id"] if primary else None,
-        "primary_summary": primary.get("summary") if primary else None,
-        "write_calendar_env": WRITE_CALENDAR,
-        "calendar_ids_env": CALENDAR_IDS,
-    }
+    """Conta(s) autenticada(s) e configuração atual."""
+    out = {"accounts": {}}
+    accs = {e[0] for e in CALENDAR_ENTRIES} | {WRITE_ACCOUNT}
+    for acc in accs:
+        try:
+            cals = calendar_service(acc).calendarList().list().execute().get("items", [])
+            primary = next((c for c in cals if c.get("primary")), None)
+            out["accounts"][acc] = {
+                "primary_id": primary["id"] if primary else None,
+                "primary_summary": primary.get("summary") if primary else None,
+                "token_file": token_path(acc),
+            }
+        except Exception as ex:
+            out["accounts"][acc] = {"error": str(ex)}
+    out["write"] = {"account": WRITE_ACCOUNT, "calendar": WRITE_CAL_ID}
+    out["calendars"] = [
+        {"account": a, "id": c, "name_override": n}
+        for a, c, n in CALENDAR_ENTRIES
+    ]
+    return out
 
 
 @app.route("/favicon.ico")

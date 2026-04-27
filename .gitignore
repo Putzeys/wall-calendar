@@ -5,4 +5,5 @@ venv/
 .env
 credentials.json
 token.json
+token_*.json
 *.log
