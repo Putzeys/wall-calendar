@@ -1,0 +1,18 @@
+services:
+  wall-calendar:
+    build: .
+    image: wall-calendar:local
+    container_name: wall-calendar
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json
+      - ./token_prototipeai.json:/app/token_prototipeai.json
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=3)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

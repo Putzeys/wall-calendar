@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+.env
+credentials.json
+token*.json
+*.md
+*.service
+run.sh
