@@ -36,6 +36,25 @@ DIAS = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
 
 app = Flask(__name__)
 
+_cal_names_cache: dict[str, str] = {}
+
+
+def cal_name(cal, cal_id: str) -> str:
+    if cal_id in _cal_names_cache:
+        return _cal_names_cache[cal_id]
+    try:
+        info = cal.calendarList().get(calendarId=cal_id).execute()
+        name = info.get("summaryOverride") or info.get("summary") or cal_id
+    except Exception:
+        name = cal_id.split("@")[0]
+    _cal_names_cache[cal_id] = name
+    return name
+
+
+def hidden_cals(req) -> set[str]:
+    raw = req.cookies.get("hidden", "")
+    return {c for c in raw.split(",") if c}
+
 
 def calendar_service():
     if not os.path.exists("token.json"):
@@ -152,14 +171,21 @@ WALL_HTML = """<!doctype html>
 <title>Cozinha</title>
 <style>
 """ + BASE_CSS + """
+.filters{display:-webkit-flex;display:flex;padding:8px;background:#0a0a0a;
+  border-bottom:1px solid #222;-webkit-flex-wrap:wrap;flex-wrap:wrap}
+.filters a{display:inline-block;padding:6px 12px;margin:3px;border-radius:14px;
+  font-size:13px;color:#fff;font-weight:500}
+.filters a.off{background:#222 !important;color:#666;text-decoration:line-through}
 .week{display:-webkit-flex;display:flex;padding-bottom:74px}
-.day{-webkit-flex:1;flex:1;border-right:1px solid #333;padding:8px;min-height:80vh}
+.day{-webkit-flex:1;flex:1;border-right:1px solid #333;padding:8px;min-height:75vh}
 .day.today{background:#181818}
 .day h2{font-size:13px;color:#888;margin:0 0 8px;text-transform:uppercase}
 .day.today h2{color:#9cf}
 .ev{padding:6px 8px;border-radius:4px;margin-bottom:4px;font-size:14px;color:#dfefff}
 .ev time{display:block;color:#bcd;font-size:12px}
 .ev.past{opacity:0.45}
+.ev.allday{font-size:12px;padding:4px 8px;border-left:3px solid #fff;border-radius:2px}
+.ev.allday time{display:none}
 form.bar{position:fixed;bottom:0;left:0;right:0;padding:10px;background:#000;
   display:-webkit-flex;display:flex;border-top:1px solid #333}
 input.txt{-webkit-flex:1;flex:1;font-size:22px;padding:14px;background:#222;
@@ -168,12 +194,20 @@ button.add{font-size:22px;padding:14px 24px;margin-left:8px;background:#2a6;
   color:#fff;border:0;border-radius:4px;font-weight:bold}
 </style></head><body>
 {% if msg %}<div class="flash {{ 'err' if err else '' }}">{{ msg }}</div>{% endif %}
+<div class="filters">
+{% for c in cal_meta %}
+  <a href="/toggle?cal={{ c.id|urlencode }}"
+     class="{{ 'off' if c.hidden else '' }}"
+     style="background:{{ c.color }}">{{ c.name }}</a>
+{% endfor %}
+</div>
 <div class="week">
 {% for d in days %}
   <div class="day{% if d.today %} today{% endif %}">
     <h2>{{ d.label }}</h2>
     {% for e in d.events %}
-      <div class="ev{% if e.past %} past{% endif %}" style="background:{{ e.color }}">
+      <div class="ev{% if e.past %} past{% endif %}{% if e.allday %} allday{% endif %}"
+           style="background:{{ e.color }}">
         <time>{{ e.time }}</time>{{ e.title }}
       </div>
     {% endfor %}
@@ -246,42 +280,75 @@ def wall():
     except RuntimeError as ex:
         return f"<h1>Setup pendente</h1><p>{ex}</p>", 503
 
+    hidden = hidden_cals(request)
     now = datetime.now()
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=7)
     items = fetch_events(cal, start, end)
 
+    cal_meta = [
+        {
+            "id": cid,
+            "name": cal_name(cal, cid),
+            "color": CAL_COLORS[i % len(CAL_COLORS)],
+            "hidden": cid in hidden,
+        }
+        for i, cid in enumerate(CALENDAR_IDS)
+    ]
+
     days = []
     for i in range(7):
         d = start + timedelta(days=i)
         key = d.strftime("%Y-%m-%d")
-        evs = []
+        all_day, timed = [], []
         for e in items:
+            if e["_cal"] in hidden:
+                continue
             dt_full = e["start"].get("dateTime", "") or e["start"].get("date", "")
             if dt_full[:10] != key:
                 continue
-            time_str = e["start"].get("dateTime", "")[11:16] or "dia todo"
+            is_allday = not e["start"].get("dateTime")
+            time_str = "" if is_allday else e["start"]["dateTime"][11:16]
             past = bool(e["start"].get("dateTime")) and (
-                datetime.fromisoformat(e["start"]["dateTime"].replace("Z", "+00:00")).replace(tzinfo=None) < now
+                datetime.fromisoformat(
+                    e["start"]["dateTime"].replace("Z", "+00:00")
+                ).replace(tzinfo=None) < now
             )
-            evs.append({
+            ev = {
                 "title": e.get("summary", "(sem título)"),
                 "time": time_str,
                 "color": e["_color"],
                 "past": past,
-            })
+                "allday": is_allday,
+            }
+            (all_day if is_allday else timed).append(ev)
         days.append({
             "label": day_label(d, now),
             "today": d.date() == now.date(),
-            "events": evs,
+            "events": all_day + timed,
         })
 
     return render_template_string(
         WALL_HTML,
         days=days,
+        cal_meta=cal_meta,
         msg=request.args.get("msg"),
         err=request.args.get("err"),
     )
+
+
+@app.route("/toggle")
+def toggle_cal():
+    cal_id = request.args.get("cal", "")
+    hidden = hidden_cals(request)
+    if cal_id in hidden:
+        hidden.discard(cal_id)
+    elif cal_id in CALENDAR_IDS:
+        hidden.add(cal_id)
+    resp = redirect("/wall")
+    resp.set_cookie("hidden", ",".join(sorted(hidden)),
+                    max_age=60 * 60 * 24 * 365, samesite="Lax")
+    return resp
 
 
 @app.route("/events", methods=["POST"])
