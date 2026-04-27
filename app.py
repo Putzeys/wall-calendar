@@ -411,6 +411,9 @@ def wall():
                 all_day.append(ev)
             else:
                 timed.append(ev)
+        timed.sort(key=lambda x: x["time"])
+        bdays.sort(key=lambda x: x["title"].lower())
+        all_day.sort(key=lambda x: x["title"].lower())
         days.append({
             "label": day_label(d, now),
             "today": d.date() == now.date(),
